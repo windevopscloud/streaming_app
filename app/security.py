@@ -123,7 +123,7 @@ def use_recovery_code(user_id, code):
 # ---------- sessions ----------
 def create_session(user_id, stage):
     token = secrets.token_urlsafe(32)
-    ttl = config.FULL_SESSION_TTL if stage == "full" else config.PARTIAL_SESSION_TTL
+    ttl = {"full": config.FULL_SESSION_TTL, "setup": config.SETUP_SESSION_TTL}.get(stage, config.PARTIAL_SESSION_TTL)
     db.x("INSERT INTO sessions (token_hash, user_id, stage, expires) VALUES (?,?,?,?)",
          (_h("sess", token), user_id, stage, now() + ttl))
     return token
@@ -137,12 +137,14 @@ def token_from(request):
 
 
 def get_session(request, stage):
+    """`stage` is one stage name or a tuple of allowed stages."""
+    allowed = (stage,) if isinstance(stage, str) else tuple(stage)
     token = token_from(request)
     row = db.one(
         "SELECT s.token_hash, s.user_id, s.stage, u.email FROM sessions s "
         "JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>?",
         (_h("sess", token), now()),
     ) if token else None
-    if not row or row["stage"] != stage:
+    if not row or row["stage"] not in allowed:
         raise ApiError(401, "not authenticated")
     return row

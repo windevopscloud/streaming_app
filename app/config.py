@@ -45,6 +45,8 @@ OTP_TTL = _int("OTP_TTL", 300)             # seconds
 OTP_MAX_ATTEMPTS = _int("OTP_MAX_ATTEMPTS", 5)
 OTP_SENDS_PER_HOUR = _int("OTP_SENDS_PER_HOUR", 3)
 PARTIAL_SESSION_TTL = _int("PARTIAL_SESSION_TTL", 300)
+SETUP_SESSION_TTL = _int("SETUP_SESSION_TTL", 900)
+MFA_REQUIRED = os.environ.get("MFA_REQUIRED", "1") == "1"   # new users must enrol an authenticator before using the app
 FULL_SESSION_TTL = _int("FULL_SESSION_TTL", 8 * 3600)
 TFA_MAX_ATTEMPTS = _int("TFA_MAX_ATTEMPTS", 5)
 CONFIRM_TTL = _int("CONFIRM_TTL", 24 * 3600)

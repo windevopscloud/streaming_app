@@ -15,7 +15,7 @@ import urllib.request
 _tmp = tempfile.mkdtemp()
 os.environ.update({
     "DATABASE_URL": f"sqlite:///{_tmp}/t.db", "MESSAGING": "console", "SECRET_KEY": "test-secret",
-    "PUBLISH_KEY": "pubkey", "OTP_SENDS_PER_HOUR": "3", "CONFIRM_RESEND_GAP": "0",
+    "PUBLISH_KEY": "pubkey", "MFA_REQUIRED": "0", "OTP_SENDS_PER_HOUR": "3", "CONFIRM_RESEND_GAP": "0",
 })
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -304,7 +304,8 @@ def fresh_user(email, phone):
 def test_plans_and_cards_listed():
     p = call("GET", "/api/plans")[1]
     assert {x["topic"]: x["price_cents"] for x in p["plans"]}["alerts"] == 500
-    cards = call("GET", "/api/test-cards")[1]["cards"]
+    assert call("GET", "/api/test-cards")[0] == 401                                 # cards need a login
+    cards = call("GET", "/api/test-cards", token=fresh_user("cards@example.com", "+919876543299"))[1]["cards"]
     assert len(cards) == 5 and all(c["balance_cents"] == 3000 for c in cards)
 
 
@@ -385,8 +386,66 @@ def test_renewal_extends_and_expired_subscription_loses_access():
 
 def test_free_plan_rejected_at_checkout_and_unknown_plan():
     tok = fresh_user("pay6@example.com", "+919876543245")
-    assert call("POST", "/api/checkout", {"topic": "general", **CARD1}, token=tok)[0] == 400
+    r = call("POST", "/api/checkout", {"topic": "general"}, token=tok)       # free plan: no card needed
+    assert r[0] == 200 and r[1]["paid_cents"] == 0 and r[1]["card_balance_cents"] is None
+    assert call("POST", "/api/checkout", {"topics": []}, token=tok)[0] == 400
     assert call("POST", "/api/checkout", {"topic": "nope", **CARD1}, token=tok)[0] == 404
+
+
+def test_mandatory_mfa_for_new_users(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "MFA_REQUIRED", True)
+    em = "mfa1@example.com"
+    signup(em)
+    r = login_full(em)
+    assert r["stage"] == "setup_required"
+    st = r["token"]
+    assert call("GET", "/api/me", token=st)[0] == 401                       # setup session can do nothing else
+    assert call("GET", "/api/plans", token=st)[0] == 200
+    assert call("POST", "/api/checkout", {"topic": "general"}, token=st)[0] == 401
+    secret = call("POST", "/api/2fa/setup", token=st)[1]["secret"]
+    cur = int(time.time()) // 30
+    en = call("POST", "/api/2fa/enable", {"code": sec.totp_at(secret, cur)}, token=st)[1]
+    assert len(en["recovery_codes"]) == 8 and en["token"]
+    assert call("GET", "/api/me", token=en["token"])[1]["totp_enabled"] is True
+    assert call("GET", "/api/me", token=st)[0] == 401                       # setup session was swapped out
+    again = login_full(em)
+    assert again["stage"] == "2fa_required"                                 # existing user: authenticator code
+
+
+def test_multi_checkout_history_feed_and_unsubscribe():
+    tok = fresh_user("multi@example.com", "+919876543298")
+    before = balance("3333")
+    card3 = {"card_number": "3" * 16, "expiry": "00/00", "cvv": "123"}
+    r = call("POST", "/api/checkout", {"topics": ["alerts", "news", "general"], **card3}, token=tok)
+    assert r[0] == 200 and r[1]["paid_cents"] == 800 and set(r[1]["topics"]) == {"alerts", "news", "general"}
+    assert balance("3333") == before - 800                                  # one payment for the whole cart
+    pays = call("GET", "/api/payments", token=tok)[1]["payments"]
+    assert len(pays) == 1 and pays[0]["amount_cents"] == 800
+    me = call("GET", "/api/me", token=tok)[1]
+    assert set(me["subscriptions"]) == {"alerts", "news", "general"}
+    # too poor for the second cart: nothing is activated, nothing charged
+    card4 = {"card_number": "4" * 16, "expiry": "00/00", "cvv": "123"}
+    db.x("UPDATE test_cards SET balance_cents=500 WHERE number=?", ("4" * 16,))
+    r2 = call("POST", "/api/checkout", {"topics": ["sports", "tech"], **card4}, token=tok)
+    assert r2[0] == 402 and "sports" not in call("GET", "/api/me", token=tok)[1]["subscriptions"]
+    db.x("UPDATE test_cards SET balance_cents=3000 WHERE number=?", ("4" * 16,))
+    # history + feed
+    h = call("GET", "/api/history", token=tok)[1]["history"]
+    assert {x["topic"] for x in h} == {"alerts", "news", "general"} and all(x["unsubscribed"] == 0 for x in h)
+    assert {x["topic"]: x["price_cents"] for x in h}["alerts"] == 500
+    call("POST", "/api/publish", {"topic": "alerts", "message": "disk 90%"}, headers={"x-publish-key": "pubkey"})
+    call("POST", "/api/publish", {"topic": "sports", "message": "not mine"}, headers={"x-publish-key": "pubkey"})
+    msgs = [e["message"] for e in call("GET", "/api/feed", token=tok)[1]["events"]]
+    assert "disk 90%" in msgs and "not mine" not in msgs
+    assert call("POST", "/api/unsubscribe", {"topic": "news"}, token=tok)[1]["unsubscribed"] is True
+    h = {x["topic"]: x for x in call("GET", "/api/history", token=tok)[1]["history"]}
+    assert h["news"]["unsubscribed"] > 0 and h["alerts"]["unsubscribed"] == 0
+    # entries older than 30 days drop off
+    db.x("UPDATE sub_history SET subscribed=?, unsubscribed=? WHERE email=? AND topic='news'",
+         (sec.now() - 40 * 86400, sec.now() - 35 * 86400, "multi@example.com"))
+    assert "news" not in {x["topic"] for x in call("GET", "/api/history", token=tok)[1]["history"]}
+    assert call("GET", "/api/history")[0] == 401
 
 
 def test_admin_topup_endpoint_and_script():

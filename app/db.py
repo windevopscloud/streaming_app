@@ -45,6 +45,14 @@ SCHEMA = [
         created BIGINT NOT NULL,
         expires BIGINT NOT NULL DEFAULT 0,
         UNIQUE (email, topic))""",
+    """CREATE TABLE IF NOT EXISTS sub_history (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        subscribed BIGINT NOT NULL,
+        unsubscribed BIGINT NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS sub_history_email ON sub_history (email, subscribed)",
     """CREATE TABLE IF NOT EXISTS plans (
         topic TEXT PRIMARY KEY,
         title TEXT NOT NULL,

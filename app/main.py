@@ -142,6 +142,8 @@ def login_verify(data, req):
         raise ApiError(400, "invalid or expired code")
     if user["totp_enabled"]:
         return {"stage": "2fa_required", "token": sec.create_session(user["id"], "partial")}
+    if config.MFA_REQUIRED:      # first login: the only thing this session can do is enrol an authenticator
+        return {"stage": "setup_required", "token": sec.create_session(user["id"], "setup")}
     return {"stage": "ok", "token": sec.create_session(user["id"], "full")}
 
 
@@ -167,6 +169,17 @@ def tfa_verify(data, req):
     return {"stage": "ok", "token": sec.create_session(user["id"], "full")}
 
 
+def _close_history(email, topic):
+    db.x("UPDATE sub_history SET unsubscribed=? WHERE email=? AND topic=? AND unsubscribed=0",
+         (sec.now(), email, topic))
+
+
+def _open_history(email, topic, price_cents):
+    if not db.one("SELECT id FROM sub_history WHERE email=? AND topic=? AND unsubscribed=0", (email, topic)):
+        db.x("INSERT INTO sub_history (id, email, topic, price_cents, subscribed) VALUES (?,?,?,?,?)",
+             (uuid.uuid4().hex, email, topic, price_cents, sec.now()))
+
+
 def _active_subs(email):
     return db.q("SELECT topic, expires FROM subscriptions WHERE email=? AND status='active' "
                 "AND (expires=0 OR expires>?) ORDER BY topic", (email, sec.now()))
@@ -182,6 +195,28 @@ def me(data, req):
             "subscription_details": [{"topic": r["topic"], "expires": r["expires"]} for r in _active_subs(u["email"])]}
 
 
+def history(data, req):
+    """Subscribe / unsubscribe activity of the last 30 days."""
+    s = sec.get_session(req, "full")
+    since = sec.now() - 30 * 86400
+    rows = db.q("SELECT h.topic, h.price_cents, h.subscribed, h.unsubscribed, p.title FROM sub_history h "
+                "LEFT JOIN plans p ON p.topic=h.topic WHERE h.email=? AND (h.subscribed>? OR h.unsubscribed>?) "
+                "ORDER BY h.subscribed DESC", (s["email"], since, since))
+    return {"history": rows, "days": 30}
+
+
+def feed(data, req):
+    """Latest content from the topics the user is subscribed to."""
+    s = sec.get_session(req, "full")
+    topics = sorted(_allowed_topics(s["email"]))
+    if not topics:
+        return {"events": []}
+    ph = ",".join("?" * len(topics))
+    rows = db.q(f"SELECT seq, topic, message, created FROM events WHERE topic IN ({ph}) "
+                f"ORDER BY seq DESC LIMIT 30", tuple(topics))
+    return {"events": rows}
+
+
 def logout(data, req):
     s = sec.get_session(req, "full")
     db.x("DELETE FROM sessions WHERE token_hash=?", (s["token_hash"],))
@@ -190,7 +225,7 @@ def logout(data, req):
 
 # ---------------------------------------------------------------- 2FA management
 def tfa_setup(data, req):
-    s = sec.get_session(req, "full")
+    s = sec.get_session(req, ("full", "setup"))
     u = db.one("SELECT * FROM users WHERE id=?", (s["user_id"],))
     if u["totp_enabled"]:
         raise ApiError(409, "2FA already enabled")
@@ -201,7 +236,7 @@ def tfa_setup(data, req):
 
 
 def tfa_enable(data, req):
-    s = sec.get_session(req, "full")
+    s = sec.get_session(req, ("full", "setup"))
     u = db.one("SELECT * FROM users WHERE id=?", (s["user_id"],))
     if u["totp_enabled"] or not u["totp_secret"]:
         raise ApiError(409, "start setup first")
@@ -209,7 +244,11 @@ def tfa_enable(data, req):
     if not step:
         raise ApiError(400, "invalid code")
     db.x("UPDATE users SET totp_enabled=1, totp_last_step=? WHERE id=?", (step, u["id"]))
-    return {"ok": True, "recovery_codes": sec.make_recovery_codes(u["id"])}
+    out = {"ok": True, "recovery_codes": sec.make_recovery_codes(u["id"])}
+    if s["stage"] == "setup":    # enrolment done: swap the setup session for a full one
+        db.x("DELETE FROM sessions WHERE token_hash=?", (s["token_hash"],))
+        out["token"] = sec.create_session(u["id"], "full")
+    return out
 
 
 def tfa_disable(data, req):
@@ -287,6 +326,7 @@ async def confirm(request):
     if int(exp) < sec.now():
         return _page("Link expired", "Please subscribe again to get a new link.", 410)
     await run_in_threadpool(db.x, "UPDATE subscriptions SET status='active' WHERE id=?", (sid,))
+    await run_in_threadpool(_open_history, sub["email"], sub["topic"], 0)
     return _page("Subscribed", f"You will now receive '{sub['topic']}' events.")
 
 
@@ -297,6 +337,7 @@ async def unsubscribe(request):
     sub = await run_in_threadpool(db.one, "SELECT * FROM subscriptions WHERE id=?", (parts[1],))
     if sub:
         await run_in_threadpool(db.x, "UPDATE subscriptions SET status='unsubscribed' WHERE id=?", (sub["id"],))
+        await run_in_threadpool(_close_history, sub["email"], sub["topic"])
         broker.kick(sub["email"], sub["topic"])
     return _page("Unsubscribed", "You will no longer receive these emails.")
 
@@ -314,6 +355,7 @@ async def unsubscribe_api(request):
     n = await run_in_threadpool(
         db.x, "UPDATE subscriptions SET status='unsubscribed' WHERE email=? AND topic=? AND status<>'unsubscribed'",
         (s["email"], topic))
+    await run_in_threadpool(_close_history, s["email"], topic)
     broker.kick(s["email"], topic)
     return JSONResponse({"ok": True, "unsubscribed": n == 1})
 
@@ -463,54 +505,80 @@ def plans_list(data, req):
 
 
 def test_cards(data, req):
+    sec.get_session(req, "full")
     if config.PAYMENT_MODE != "test":
         raise ApiError(404, "not found")
     return {"cards": payments.list_cards()}
 
 
 def checkout(data, req):
+    """Buy one or more plans in a single payment. Free plans in the cart are activated directly (the email is already verified)."""
     s = sec.get_session(req, "full")
     if config.PAYMENT_MODE != "test":
         raise ApiError(503, "payments disabled")
-    topic = norm_topic(data.get("topic"))
-    plan = db.one("SELECT * FROM plans WHERE topic=?", (topic,))
-    if not plan:
-        raise ApiError(404, "unknown plan")
-    if plan["price_cents"] <= 0:
-        raise ApiError(400, "free plan: use email subscribe")
-    amount = plan["price_cents"]
-    ok, reason, last4 = payments.charge(data.get("card_number"), data.get("expiry"), data.get("cvv"), amount)
-    pid = uuid.uuid4().hex
-    db.x("INSERT INTO payments (id, user_id, topic, card_last4, amount_cents, status, reason, created) "
-         "VALUES (?,?,?,?,?,?,?,?)",
-         (pid, s["user_id"], topic, last4, amount, "approved" if ok else "declined", reason, sec.now()))
-    if not ok:
-        raise ApiError(402, DECLINE[reason])
+    raw = data.get("topics")
+    if raw is None:
+        raw = [data.get("topic")]
+    if not isinstance(raw, list) or not raw or len(raw) > 20:
+        raise ApiError(400, "choose at least one subscription")
+    topics = list(dict.fromkeys(norm_topic(t) for t in raw))
+    plans = []
+    for topic in topics:
+        plan = db.one("SELECT * FROM plans WHERE topic=?", (topic,))
+        if not plan:
+            raise ApiError(404, "unknown plan")
+        plans.append(plan)
+    amount = sum(p["price_cents"] for p in plans)
+    last4 = None
+    pid = None
+    if amount > 0:
+        ok, reason, last4 = payments.charge(data.get("card_number"), data.get("expiry"), data.get("cvv"), amount)
+        pid = uuid.uuid4().hex
+        db.x("INSERT INTO payments (id, user_id, topic, card_last4, amount_cents, status, reason, created) "
+             "VALUES (?,?,?,?,?,?,?,?)",
+             (pid, s["user_id"], ",".join(topics), last4, amount, "approved" if ok else "declined", reason, sec.now()))
+        if not ok:
+            raise ApiError(402, DECLINE[reason])
+    expiries = {}
     try:
         t = sec.now()
-        sub = db.one("SELECT * FROM subscriptions WHERE email=? AND topic=?", (s["email"], topic))
-        if sub:
-            live = sub["status"] == "active" and (sub["expires"] == 0 or sub["expires"] > t)
-            base = max(t, sub["expires"]) if live else t        # renewing extends, never shortens
-            expires = base + config.SUB_DAYS * 86400
-            db.x("UPDATE subscriptions SET status='active', expires=? WHERE id=?", (expires, sub["id"]))
-        else:
-            expires = t + config.SUB_DAYS * 86400
-            db.x("INSERT INTO subscriptions (id, email, topic, status, last_sent, created, expires) "
-                 "VALUES (?,?,?,?,?,?,?)", (uuid.uuid4().hex, s["email"], topic, "active", 0, t, expires))
+        for plan in plans:
+            topic = plan["topic"]
+            sub = db.one("SELECT * FROM subscriptions WHERE email=? AND topic=?", (s["email"], topic))
+            days = config.SUB_DAYS * 86400 if plan["price_cents"] > 0 else 0
+            if sub:
+                live = sub["status"] == "active" and (sub["expires"] == 0 or sub["expires"] > t)
+                base = max(t, sub["expires"]) if live else t        # renewing extends, never shortens
+                expires = base + days if days else 0
+                db.x("UPDATE subscriptions SET status='active', expires=? WHERE id=?", (expires, sub["id"]))
+            else:
+                expires = t + days if days else 0
+                db.x("INSERT INTO subscriptions (id, email, topic, status, last_sent, created, expires) "
+                     "VALUES (?,?,?,?,?,?,?)", (uuid.uuid4().hex, s["email"], topic, "active", 0, t, expires))
+            expiries[topic] = expires
+            if plan["price_cents"] > 0:      # every purchase / renewal is its own history line
+                db.x("INSERT INTO sub_history (id, email, topic, price_cents, subscribed) VALUES (?,?,?,?,?)",
+                     (uuid.uuid4().hex, s["email"], topic, plan["price_cents"], t))
+            else:
+                _open_history(s["email"], topic, 0)
     except Exception:
-        payments.refund(last4, amount)                          # never keep money without a subscription
-        db.x("UPDATE payments SET status='refunded' WHERE id=?", (pid,))
+        if amount > 0:
+            payments.refund(last4, amount)                          # never keep money without a subscription
+            db.x("UPDATE payments SET status='refunded' WHERE id=?", (pid,))
         raise ApiError(500, "could not activate subscription, card was not charged")
     try:
-        messaging.send_email(s["email"], f"Receipt: {plan['title']}",
-                             f"Thanks! ${amount / 100:.2f} (TEST payment) charged to card ending {last4}.\n"
-                             f"'{topic}' is active until {time.strftime('%Y-%m-%d', time.gmtime(expires))}.")
+        lines = "\n".join(f"- {p['title']}: ${p['price_cents'] / 100:.2f}" for p in plans)
+        tail = f"Total ${amount / 100:.2f} (TEST payment) charged to card ending {last4}." if amount else "No charge."
+        messaging.send_email(s["email"], "Receipt: " + ", ".join(p["title"] for p in plans),
+                             f"Thanks! You are subscribed to:\n{lines}\n\n{tail}")
     except Exception as e:
         print("receipt email failed:", e, flush=True)
-    bal = db.one("SELECT balance_cents FROM test_cards WHERE number LIKE ?", ("%" + last4,))["balance_cents"]
-    return {"ok": True, "topic": topic, "paid_cents": amount, "card_last4": last4,
-            "expires": expires, "card_balance_cents": bal}
+    bal = None
+    if last4:
+        bal = db.one("SELECT balance_cents FROM test_cards WHERE number LIKE ?", ("%" + last4,))["balance_cents"]
+    first = topics[0]
+    return {"ok": True, "topics": topics, "topic": first, "paid_cents": amount, "card_last4": last4,
+            "expires": expiries[first], "expiries": expiries, "card_balance_cents": bal}
 
 
 def payments_list(data, req):
@@ -577,6 +645,8 @@ app = Starlette(lifespan=lifespan, routes=[
     Route("/api/test-cards", api(test_cards), methods=["GET"]),
     Route("/api/checkout", api(checkout), methods=["POST"]),
     Route("/api/payments", api(payments_list), methods=["GET"]),
+    Route("/api/history", api(history), methods=["GET"]),
+    Route("/api/feed", api(feed), methods=["GET"]),
     Route("/api/admin/topup", api(admin_topup), methods=["POST"]),
     Route("/confirm", confirm, methods=["GET"]),
     Route("/unsubscribe", unsubscribe, methods=["GET"]),
