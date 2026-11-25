@@ -1,0 +1,66 @@
+# Replace __ACCOUNT_ID__, __REGISTRY__, __IMAGE_TAG__, __HOST__ before apply.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: streamnotify
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::__ACCOUNT_ID__:role/streamnotify-role
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamnotify-config
+data:
+  MESSAGING: "aws"
+  AWS_REGION: "us-west-2"
+  SES_FROM: "windevopscloud+sender@gmail.com"   # must be a verified SES identity
+  BASE_URL: "https://__HOST__"
+---
+# Create once (not committed):
+# kubectl create secret generic streamnotify-secret \
+#   --from-literal=SECRET_KEY=$(openssl rand -hex 32) \
+#   --from-literal=PUBLISH_KEY=$(openssl rand -hex 24) \
+#   --from-literal=DATABASE_URL='postgresql://user:pass@<rds-endpoint>:5432/streamnotify?sslmode=require'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: streamnotify
+spec:
+  replicas: 1            # in-memory SSE broker: keep at 1
+  selector: {matchLabels: {app: streamnotify}}
+  template:
+    metadata: {labels: {app: streamnotify}}
+    spec:
+      serviceAccountName: streamnotify
+      containers:
+        - name: app
+          image: __REGISTRY__/streamnotify:__IMAGE_TAG__
+          ports: [{containerPort: 8000}]
+          envFrom:
+            - configMapRef: {name: streamnotify-config}
+            - secretRef: {name: streamnotify-secret}
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 20}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: streamnotify
+spec:
+  selector: {app: streamnotify}
+  ports: [{port: 80, targetPort: 8000, name: http}]
+---
+# Gateway name/namespace: use the same Gateway your other services use (see services_app ingress-gw.yaml).
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: streamnotify
+spec:
+  hosts: ["__HOST__"]
+  gateways: ["istio-system/ingress-gw"]
+  http:
+    - route: [{destination: {host: streamnotify, port: {number: 80}}}]
+      timeout: 0s          # long-lived SSE connections

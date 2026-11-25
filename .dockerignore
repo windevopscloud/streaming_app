@@ -1,0 +1,3 @@
+tests
+*.db
+__pycache__

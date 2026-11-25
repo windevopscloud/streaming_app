@@ -1,0 +1,133 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StreamNotify - Two-factor setup</title>
+<style>
+  :root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--card:#f6f6f4;--line:#ddd;--acc:#0b5fff;--ok:#2f855a;--bad:#c0392b}
+  @media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#eee;--mut:#9a9a9a;--card:#1e1e1e;--line:#333;--acc:#6aa0ff;--ok:#5fcf8a;--bad:#ff7b6b}}
+  body{font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:40rem;margin:0 auto;padding:1rem}
+  h1{font-size:1.3rem;margin:.2rem 0} h2{font-size:1rem;margin:0 0 .5rem}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin:1rem 0}
+  input,button{font:inherit;padding:.5rem .7rem;margin:.2rem .2rem .2rem 0;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+  button{background:var(--acc);color:#fff;border:0;cursor:pointer} button.alt{background:var(--mut)} button.red{background:var(--bad)}
+  input.code{font:600 1.4rem ui-monospace,monospace;letter-spacing:.35em;width:9.5em;text-align:center}
+  .mut{color:var(--mut);font-size:13px} .ok{color:var(--ok);font-weight:600} .bad{color:var(--bad);font-weight:600}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0} .steps li{counter-increment:s;margin:.9rem 0;padding-left:2.2rem;position:relative}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:0;width:1.6rem;height:1.6rem;border-radius:50%;background:var(--acc);color:#fff;text-align:center;font-weight:700;font-size:.85rem;line-height:1.6rem}
+  .qrbox{background:#fff;display:inline-block;padding:.4rem;border-radius:8px;border:1px solid var(--line)} .qrbox svg{display:block;width:210px;height:210px}
+  .key{font:600 1rem ui-monospace,monospace;word-break:break-all;background:var(--bg);border:1px dashed var(--line);padding:.4rem .6rem;border-radius:6px;display:inline-block}
+  .codes{display:grid;grid-template-columns:repeat(2,1fr);gap:.4rem;font:600 1rem ui-monospace,monospace;margin:.6rem 0}
+  .codes div{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:.4rem;text-align:center}
+  .pill{display:inline-block;padding:.15rem .6rem;border-radius:99px;font-size:13px;font-weight:700;color:#fff}
+  [hidden]{display:none!important}
+</style>
+<p><a href="/">&larr; Back to StreamNotify</a></p>
+<h1>Two-factor authentication</h1>
+<p class="mut" id="who"></p>
+
+<section id="nologin" hidden>
+  <h2>Please log in first</h2>
+  <p>Your session was not found. <a href="/">Go back</a>, log in, then open this page again.</p>
+</section>
+
+<section id="status" hidden>
+  <h2>Status: <span id="pill" class="pill"></span></h2>
+  <div id="on_info" hidden>
+    <p class="mut">Every login now asks for the 6-digit code from your authenticator app after the email/SMS code.
+      Recovery codes left: <b id="rec_left">0</b></p>
+  </div>
+  <button id="start" onclick="start()" hidden>Set up authenticator</button>
+</section>
+
+<section id="setup" hidden>
+  <h2>Set up your authenticator app</h2>
+  <ol class="steps">
+    <li><b>Install an authenticator app</b> on your phone: Google Authenticator, Microsoft Authenticator or Authy.</li>
+    <li><b>Scan this QR code</b> with the app (Add account &rarr; Scan a QR code).<br>
+      <div class="qrbox" id="qr" style="margin-top:.4rem"></div><br>
+      <span class="mut">Can't scan? Choose "Enter a setup key" and type this key (time-based, 6 digits):</span><br>
+      <span class="key" id="secret"></span> <button class="alt" type="button" onclick="copy('secret')">Copy</button>
+    </li>
+    <li><b>Enter the 6-digit code</b> your app shows now to confirm it works.<br>
+      <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code">
+      <button onclick="enable()">Verify &amp; turn on</button>
+      <div id="msg" class="mut"></div>
+    </li>
+  </ol>
+  <button class="alt" onclick="cancelSetup()">Cancel</button>
+</section>
+
+<section id="recovery" hidden>
+  <h2>Save your recovery codes</h2>
+  <p class="mut">Each code works once if you lose your phone. They are shown <b>only now</b> - store them somewhere safe.</p>
+  <div class="codes" id="codes"></div>
+  <button onclick="copyCodes()">Copy all</button>
+  <button class="alt" onclick="downloadCodes()">Download .txt</button>
+  <label class="mut" style="display:block;margin-top:.6rem"><input type="checkbox" id="saved" onchange="$('done').disabled=!this.checked"> I have saved these codes</label>
+  <button id="done" disabled onclick="doneRecovery()">Done</button>
+</section>
+
+<section id="manage" hidden>
+  <h2>Manage</h2>
+  <p class="mut">Enter a current 6-digit code from your authenticator app to continue.</p>
+  <input id="mcode" class="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off"><br>
+  <button class="alt" onclick="regen()">Get new recovery codes</button>
+  <button class="red" onclick="disable()">Turn off 2FA</button>
+  <div id="mmsg" class="mut"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+let token = null, lastCodes = [];
+try { token = sessionStorage.getItem('sn_token'); } catch (e) {}
+async function api(path, body) {
+  const r = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({})); j._status = r.status; return j;
+}
+function show(...ids) { ['nologin', 'status', 'setup', 'recovery', 'manage'].forEach(i => $(i).hidden = !ids.includes(i)); }
+async function load() {
+  if (!token) return show('nologin');
+  const me = await api('/api/me');
+  if (me.error) return show('nologin');
+  $('who').textContent = 'Signed in as ' + me.email;
+  const on = me.totp_enabled, p = $('pill');
+  p.textContent = on ? 'ON' : 'OFF'; p.style.background = on ? 'var(--ok)' : 'var(--mut)';
+  $('on_info').hidden = !on; $('rec_left').textContent = me.recovery_remaining; $('start').hidden = on;
+  show('status', ...(on ? ['manage'] : []));
+}
+async function start() {
+  const j = await api('/api/2fa/setup', {});
+  if (j.error) { alert(j.error); return load(); }
+  $('qr').innerHTML = j.qr_svg; $('secret').textContent = j.secret.replace(/(.{4})/g, '$1 ').trim(); $('code').value = ''; $('msg').textContent = '';
+  show('setup'); $('code').focus();
+}
+function cancelSetup() { load(); }
+async function enable() {
+  const j = await api('/api/2fa/enable', {code: $('code').value.trim()});
+  if (j.error) { $('msg').textContent = j.error + ' - check the code and your phone clock, then try again.'; $('msg').className = 'bad'; return; }
+  showCodes(j.recovery_codes);
+}
+function showCodes(codes) {
+  lastCodes = codes; $('codes').innerHTML = codes.map(c => '<div>' + c + '</div>').join('');
+  $('saved').checked = false; $('done').disabled = true; show('recovery'); window.scrollTo(0, 0);
+}
+function doneRecovery() { load(); }
+async function regen() {
+  const j = await api('/api/2fa/recovery', {code: $('mcode').value.trim()});
+  if (j.error) { $('mmsg').textContent = j.error; $('mmsg').className = 'bad'; return; }
+  $('mcode').value = ''; showCodes(j.recovery_codes);
+}
+async function disable() {
+  const j = await api('/api/2fa/disable', {code: $('mcode').value.trim()});
+  if (j.error) { $('mmsg').textContent = j.error; $('mmsg').className = 'bad'; return; }
+  $('mcode').value = ''; $('mmsg').textContent = ''; load();
+}
+function copy(id) { const t = $(id).textContent.replace(/\s/g, ''); navigator.clipboard && navigator.clipboard.writeText(t).catch(() => {}); }
+function copyCodes() { navigator.clipboard && navigator.clipboard.writeText(lastCodes.join('\n')).catch(() => {}); }
+function downloadCodes() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['StreamNotify recovery codes (each works once)\n\n' + lastCodes.join('\n') + '\n'], {type: 'text/plain'}));
+  a.download = 'streamnotify-recovery-codes.txt'; a.click();
+}
+load();
+</script>

@@ -1,0 +1,185 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StreamNotify</title>
+<style>
+  :root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--card:#f6f6f4;--line:#ddd;--acc:#0b5fff}
+  @media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#eee;--mut:#9a9a9a;--card:#1e1e1e;--line:#333;--acc:#6aa0ff}}
+  body{font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:40rem;margin:0 auto;padding:1rem}
+  h1{font-size:1.3rem} h2{font-size:1rem;margin:0 0 .5rem}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin:1rem 0}
+  input,select,button{font:inherit;padding:.45rem .6rem;margin:.2rem .2rem .2rem 0;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+  button{background:var(--acc);color:#fff;border:0;cursor:pointer}
+  #log{white-space:pre-wrap;font:13px ui-monospace,monospace;max-height:14rem;overflow:auto}
+  .mut{color:var(--mut);font-size:13px} pre{overflow:auto}
+  button.alt{background:var(--mut)} button.red{background:#c0392b}
+  table{border-collapse:collapse;width:100%;font-size:13px} td,th{padding:.3rem .4rem;border-bottom:1px solid var(--line);text-align:left}
+  .row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;padding:.35rem 0;border-bottom:1px solid var(--line)}
+  .row .grow{flex:1;min-width:10rem} .msg{margin:.4rem 0;font-weight:600} .ok{color:#2f855a} .bad{color:#c0392b}
+</style>
+<h1>StreamNotify</h1>
+<p class="mut" id="status">Not signed in</p>
+
+<section><h2>1. Sign up (email + mobile)</h2>
+  <input id="r_email" placeholder="email" type="email">
+  <input id="r_phone" placeholder="+919876543210">
+  <button onclick="reg()">Send codes</button><br>
+  <input id="r_ecode" placeholder="email code" inputmode="numeric"><button onclick="ver('email')">Verify email</button><br>
+  <input id="r_scode" placeholder="SMS code" inputmode="numeric"><button onclick="ver('sms')">Verify mobile</button>
+</section>
+
+<section><h2>2. Log in</h2>
+  <input id="l_email" placeholder="email" type="email">
+  <select id="l_ch"><option value="email">code by email</option><option value="sms">code by SMS</option></select>
+  <button onclick="login()">Send code</button><br>
+  <input id="l_code" placeholder="code" inputmode="numeric"><button onclick="loginVerify()">Log in</button>
+  <div id="tfa" hidden><input id="t_code" placeholder="authenticator code" inputmode="numeric">
+    <button onclick="tfa('code')">Verify 2FA</button><br>
+    <input id="t_rec" placeholder="recovery code (xxxx-xxxx)"><button onclick="tfa('recovery_code')">Use recovery code</button></div>
+</section>
+
+<section><h2>3. Two-factor (authenticator app)</h2>
+  <p class="mut" style="margin:.2rem 0 .6rem">Scan a QR code with Google/Microsoft Authenticator or Authy, then every login asks for the 6-digit code.</p>
+  <a href="/2fa"><button type="button">Open 2FA setup page</button></a> <span class="mut" id="tfa_state"></span>
+</section>
+
+<section><h2>4. Plans <span class="mut" id="plan_days"></span></h2>
+  <div id="plans" class="mut">Loading...</div>
+  <div id="checkout" hidden>
+    <h2 id="co_title" style="margin-top:.8rem"></h2>
+    <input id="c_num" placeholder="card number" inputmode="numeric" autocomplete="off">
+    <input id="c_exp" placeholder="MM/YY" size="6" autocomplete="off">
+    <input id="c_cvv" placeholder="CVV" size="4" autocomplete="off">
+    <button onclick="pay()">Pay</button><button class="alt" onclick="$('checkout').hidden=true">Cancel</button>
+    <div id="co_msg" class="msg"></div>
+    <p class="mut">TEST MODE: only the dummy cards below work. No real card data is accepted or stored.</p>
+  </div>
+  <div id="free" hidden class="mut" style="margin-top:.6rem">
+    Free plan: <input id="s_email" placeholder="email" type="email"><button onclick="subFree()">Subscribe by email</button>
+    (a confirmation link is emailed)</div>
+</section>
+
+<section><h2>5. My subscriptions</h2>
+  <div id="mysubs" class="mut">Log in to see your subscriptions.</div>
+  <button class="alt" id="logout" onclick="logout()" hidden>Log out</button>
+  <div id="log"></div>
+</section>
+
+<section><h2>6. Test cards <span class="mut">(dummy, $30 each at start)</span></h2>
+  <table id="cards"></table>
+  <h2 style="margin-top:1rem">Payment history</h2><table id="pays"><tr><td class="mut">Log in to see payments.</td></tr></table>
+</section>
+
+<script>
+let token = null, es = null, partial = null;
+try { token = sessionStorage.getItem('sn_token') || null; } catch (e) {}
+function saveToken() { try { token ? sessionStorage.setItem('sn_token', token) : sessionStorage.removeItem('sn_token'); } catch (e) {} }
+const $ = id => document.getElementById(id);
+const log = m => { $('log').textContent += m + '\n'; $('log').scrollTop = 1e9; };
+async function api(path, body, tok, method) {
+  const r = await fetch(path, {method: method || (body ? 'POST' : 'GET'),
+    headers: Object.assign({'Content-Type': 'application/json'}, tok ? {Authorization: 'Bearer ' + tok} : {}),
+    body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({})); j._status = r.status; return j;
+}
+const say = (m) => $('status').textContent = m;
+async function reg() { const j = await api('/api/register', {email: $('r_email').value, phone: $('r_phone').value}); say(j.error || j.message); }
+async function ver(ch) { const j = await api('/api/verify', {email: $('r_email').value, channel: ch, code: $(ch == 'email' ? 'r_ecode' : 'r_scode').value}); say(j.error || ('email verified: ' + j.email_verified + ', mobile verified: ' + j.phone_verified)); }
+async function login() { const j = await api('/api/login', {email: $('l_email').value, channel: $('l_ch').value}); say(j.error || j.message); }
+async function loginVerify() {
+  const j = await api('/api/login/verify', {email: $('l_email').value, channel: $('l_ch').value, code: $('l_code').value});
+  if (j.error) return say(j.error);
+  if (j.stage == '2fa_required') { partial = j.token; $('tfa').hidden = false; return say('Enter your authenticator code'); }
+  token = j.token; saveToken(); $('tfa').hidden = true; say('Signed in'); refresh();
+}
+async function tfa(kind) {
+  const j = await api('/api/2fa/verify', {[kind]: $(kind == 'code' ? 't_code' : 't_rec').value}, partial);
+  if (j.error) return say(j.error);
+  token = j.token; saveToken(); partial = null; $('tfa').hidden = true; say('Signed in with 2FA'); refresh();
+}
+const money = c => '$' + (c / 100).toFixed(2);
+let streams = {}, plans = [], mine = [], buying = null;
+async function loadPlans() {
+  const j = await api('/api/plans'); plans = j.plans; $('plan_days').textContent = '(' + j.days + '-day access per purchase)';
+  renderPlans(); loadCards();
+}
+function renderPlans() {
+  $('plans').innerHTML = '';
+  plans.forEach(p => {
+    const row = document.createElement('div'); row.className = 'row';
+    const has = mine.includes(p.topic);
+    row.innerHTML = '<div class="grow"><b>' + p.title + '</b> <span class="mut">(' + p.topic + ')</span><br><span class="mut">' + p.description + '</span></div>' +
+      '<div>' + (p.price_cents ? money(p.price_cents) + ' / month' : 'Free') + '</div>';
+    const b = document.createElement('button');
+    b.textContent = p.price_cents ? (has ? 'Renew' : 'Subscribe') : (has ? 'Subscribed' : 'Subscribe');
+    b.disabled = !p.price_cents && has;
+    b.onclick = () => p.price_cents ? openCheckout(p) : ($('free').hidden = false, $('s_email').dataset.topic = p.topic);
+    row.appendChild(b); $('plans').appendChild(row);
+  });
+}
+function openCheckout(p) {
+  if (!token) return say('Log in first to buy a plan');
+  buying = p; $('checkout').hidden = false; $('co_msg').textContent = ''; $('co_msg').className = 'msg';
+  $('co_title').textContent = 'Pay ' + money(p.price_cents) + ' for ' + p.title;
+}
+async function pay() {
+  const j = await api('/api/checkout', {topic: buying.topic, card_number: $('c_num').value, expiry: $('c_exp').value, cvv: $('c_cvv').value}, token);
+  const m = $('co_msg');
+  if (j.error) { m.textContent = j.error; m.className = 'msg bad'; loadCards(); loadPays(); return; }
+  m.textContent = 'Payment approved: ' + money(j.paid_cents) + ' charged to card ending ' + j.card_last4 + '. Active until ' + new Date(j.expires * 1000).toLocaleDateString();
+  m.className = 'msg ok'; $('c_cvv').value = ''; refresh();
+}
+async function subFree() {
+  const j = await api('/api/subscribe', {email: $('s_email').value, topic: $('s_email').dataset.topic || 'general'}); say(j.error || j.message);
+}
+async function loadCards() {
+  const j = await api('/api/test-cards'); const t = $('cards');
+  if (j.error) { t.innerHTML = ''; return; }
+  t.innerHTML = '<tr><th>Card number</th><th>Expiry</th><th>CVV</th><th>Balance</th></tr>' + j.cards.map(c =>
+    '<tr><td>' + c.number.replace(/(.{4})/g, '$1 ').trim() + '</td><td>' + c.expiry + '</td><td>' + c.cvv + '</td><td>' + money(c.balance_cents) + '</td></tr>').join('');
+}
+async function loadPays() {
+  if (!token) return;
+  const j = await api('/api/payments', null, token); if (j.error) return;
+  $('pays').innerHTML = j.payments.length ? '<tr><th>When</th><th>Email</th><th>Topic</th><th>Amount</th><th>Card</th><th>Result</th></tr>' + j.payments.map(p =>
+    '<tr><td>' + new Date(p.created * 1000).toLocaleString() + '</td><td>' + p.email + '</td><td>' + p.topic + '</td><td>' + money(p.amount_cents) + '</td><td>' + (p.card_last4 || '-') + '</td><td class="' + (p.status == 'approved' ? 'ok' : 'bad') + '">' +
+    (p.status == 'approved' ? 'approved' : 'declined: ' + p.reason.replace('_', ' ')) + '</td></tr>').join('') : '<tr><td class="mut">No payments yet.</td></tr>';
+}
+async function refresh() {
+  if (!token) { mine = []; $('mysubs').textContent = 'Log in to see your subscriptions.'; $('logout').hidden = true; renderPlans(); return; }
+  const j = await api('/api/me', null, token);
+  if (j.error) { token = null; saveToken(); return refresh(); }
+  mine = j.subscriptions; $('tfa_state').textContent = j.totp_enabled ? '2FA is ON (' + j.recovery_remaining + ' recovery codes left)' : '2FA is off'; $('logout').hidden = false; $('s_email').value = j.email;
+  const box = $('mysubs'); box.innerHTML = '';
+  if (!j.subscription_details.length) box.innerHTML = '<span class="mut">No active subscriptions yet. Pick a plan above. You stay logged in.</span>';
+  j.subscription_details.forEach(d => {
+    const p = plans.find(x => x.topic == d.topic) || {title: d.topic};
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = '<div class="grow"><b>' + p.title + '</b> <span class="mut">(' + d.topic + ') ' + (d.expires ? 'until ' + new Date(d.expires * 1000).toLocaleDateString() : 'free') + '</span></div>';
+    const w = document.createElement('button'); w.textContent = streams[d.topic] ? 'Stop watching' : 'Watch live';
+    w.onclick = () => { streams[d.topic] ? stopStream(d.topic) : startStream(d.topic); refresh(); };
+    const u = document.createElement('button'); u.className = 'red'; u.textContent = 'Unsubscribe'; u.onclick = () => unsub(d.topic);
+    row.append(w, u); box.appendChild(row);
+  });
+  renderPlans(); loadPays(); loadCards();
+}
+async function unsub(topic) {
+  const j = await api('/api/unsubscribe', {topic}, token);
+  stopStream(topic); say(j.error || (j.unsubscribed ? 'Unsubscribed from ' + topic + ' (no refund in test mode). You are still logged in.' : 'Not subscribed'));
+  refresh();
+}
+function startStream(t) {
+  stopStream(t);
+  const es = new EventSource('/api/stream?topics=' + encodeURIComponent(t) + '&access_token=' + encodeURIComponent(token || ''));
+  es.addEventListener(t, e => log(new Date().toLocaleTimeString() + '  [' + t + '] ' + e.data));
+  es.addEventListener('unsubscribed', () => { log('[' + t + '] unsubscribed - stream closed'); stopStream(t); refresh(); });
+  es.onopen = () => log('[' + t + '] connected'); es.onerror = () => log('[' + t + '] stream error / reconnecting');
+  streams[t] = es;
+}
+function stopStream(t) { if (streams[t]) { streams[t].close(); delete streams[t]; log('[' + t + '] stopped'); } }
+async function logout() {
+  Object.keys(streams).forEach(stopStream);
+  await api('/api/logout', {}, token); token = null; saveToken(); say('Logged out'); refresh();
+}
+loadPlans().then(refresh);
+</script>
