@@ -479,3 +479,10 @@ def test_secret_files_override_env(tmp_path, monkeypatch):
     f = tmp_path / "k"; f.write_text("from-file\n")
     monkeypatch.setenv("X_TEST_FILE", str(f)); monkeypatch.setenv("X_TEST", "from-env")
     assert config._secret("X_TEST") == "from-file"
+
+
+def test_pod_tls_cert_is_valid_and_served(tmp_path):
+    import ssl
+    from app.tls import make_self_signed
+    cert, key = make_self_signed(str(tmp_path))
+    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)   # loads = matching, valid pair

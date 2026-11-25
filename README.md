@@ -38,11 +38,16 @@ Top up all cards back to $30:
 POST /api/register, /api/verify, /api/login, /api/login/verify, /api/2fa/{setup,enable,verify,disable,recovery}, page /2fa,
 /api/plans, /api/checkout, /api/payments, /api/test-cards, /api/admin/topup, /api/subscribe (free plan), /api/unsubscribe, /api/publish, /api/logout - GET /api/me, /api/stream?topics=, /confirm, /unsubscribe
 
+## HTTPS end to end
+Browser -> ALB: HTTPS with the ACM certificate for `streaming.windevopscloud.com` (HTTP 80 redirects to 443).
+ALB -> pod: HTTPS too (`backend-protocol: HTTPS`). The pod serves TLS itself on 8443 (`python -m app.serve`) with a self-signed certificate made at start (the ALB does not validate it). Probes, Service (443) and the test publisher use HTTPS.
+signup_app is different: it ends TLS at the ALB and talks plain HTTP to its pods. Local development stays plain HTTP (`uvicorn app.main:app --port 8000`).
+
 ## Deploy (EKS, same pattern as signup_app)
 Layout: `k8s/base` + `k8s/overlays/poc` (kustomize, no placeholders), `deploy/apply.sh`, `.github/workflows/build-push.yml`.
 1. **Runner**: this repo has its own runner `streaming_app-runner-poc` (init_aws workflow: `create_app_runner=yes`, `APP_GITHUB_REPO=streaming_app`).
 2. **Secrets Manager** (infra_aws): the pod reads `ses/poc/smtp` (Gmail user + app password, already used by signup_app) and `streamnotify/poc/app` (`SECRET_KEY`, `PUBLISH_KEY`). The IAM role `streamnotify-role` must be allowed to read both, or the pod stays in ContainerCreating.
-3. **Host + TLS**: ACM certificate for `stream.windevopscloud.com` in us-west-2 plus a CNAME to the ALB. The Ingress has no certificate ARN: the AWS Load Balancer Controller finds the certificate that matches the host.
+3. **Host + TLS**: ACM certificate for `streaming.windevopscloud.com` in us-west-2 plus a CNAME to the ALB. The Ingress has no certificate ARN: the AWS Load Balancer Controller finds the certificate that matches the host.
 4. **Build + deploy**: run the `build-push` workflow (`deploy=yes`). `deploy/apply.sh` writes a small kustomize overlay for that run (image = your account's ECR + the commit tag, IRSA role ARN) and applies it. Replicas stay at 1 (in-memory SSE broker).
 5. Data is SQLite on an emptyDir (lost when the pod is replaced); set `DATABASE_URL` to an RDS PostgreSQL URL for anything lasting.
 6. Test publisher: suspended CronJob. Run once: `kubectl create job --from=cronjob/streamnotify-publisher test-1`.
@@ -50,5 +55,5 @@ Layout: `k8s/base` + `k8s/overlays/poc` (kustomize, no placeholders), `deploy/ap
 ## AWS gotchas
 - **Email**: `MESSAGING=smtp` is the same logic as signup_app (`SMTP_HOST`, `SMTP_PORT`, `MAIL_FROM`, `SMTP_USER_FILE`, `SMTP_PASSWORD_FILE`, STARTTLS on 587, which the node security group allows). `MESSAGING=aws` (SES API, port 443) cannot be reached from nodes without internet.
 - **SNS SMS** (only with `SMS_ENABLED=1`, `MESSAGING=aws`): new accounts can text only verified destination numbers. India (+91) needs DLT registration.
-- The live feed keeps one HTTP response open and sends events into it. API Gateway holds a response back until it is finished, so events would arrive late or not at all. That is why this app has its own hostname (`stream.windevopscloud.com`) straight on an ALB, not behind API Gateway. The app pings every 15 s and the ALB idle timeout is 300 s.
+- The live feed keeps one HTTP response open and sends events into it. API Gateway holds a response back until it is finished, so events would arrive late or not at all. That is why this app has its own hostname (`streaming.windevopscloud.com`) straight on an ALB, not behind API Gateway. The app pings every 15 s and the ALB idle timeout is 300 s.
 - SSE page uses `?access_token=` because EventSource cannot set headers; for production move to a cookie.

@@ -4,3 +4,4 @@ boto3==1.40.0
 reportlab==5.0.1
 psycopg2-binary==2.9.10
 pytest==8.4.1
+cryptography==44.0.3

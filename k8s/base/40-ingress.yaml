@@ -9,6 +9,8 @@ metadata:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     # no certificate-arn: the ALB controller finds the ACM certificate that matches the host below
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS      # ALB -> pod is encrypted too (pod cert is self-signed, ALB does not validate it)
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTPS
     alb.ingress.kubernetes.io/healthcheck-path: /healthz
     # live feed (SSE): the app sends a ping every 15s, so a longer idle timeout keeps streams open
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
@@ -16,7 +18,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: stream.windevopscloud.com
+    - host: streaming.windevopscloud.com
       http:
         paths:
           - path: /
@@ -25,4 +27,4 @@ spec:
               service:
                 name: streamnotify
                 port:
-                  number: 80
+                  number: 443

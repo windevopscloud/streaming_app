@@ -16,5 +16,5 @@ configMapGenerator:
       - SMTP_HOST=smtp.gmail.com
       - SMTP_PORT=587
       - MAIL_FROM=windevopscloud+sender@gmail.com
-      - BASE_URL=https://stream.windevopscloud.com
+      - BASE_URL=https://streaming.windevopscloud.com
       - DATABASE_URL=sqlite:////data/streamnotify.db

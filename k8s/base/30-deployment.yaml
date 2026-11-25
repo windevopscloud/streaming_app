@@ -17,7 +17,7 @@ spec:
       containers:
         - name: app
           image: streamnotify
-          ports: [{containerPort: 8000}]
+          ports: [{containerPort: 8443}]
           envFrom: [{configMapRef: {name: streamnotify-config}}]
           env:
             - {name: SECRET_KEY_FILE,    value: /mnt/secrets-store/secret-key}
@@ -27,8 +27,8 @@ spec:
           volumeMounts:
             - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
             - {name: data, mountPath: /data}
-          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 5}
-          livenessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 10}
+          readinessProbe: {httpGet: {path: /healthz, port: 8443, scheme: HTTPS}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: 8443, scheme: HTTPS}, periodSeconds: 10}
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {memory: 256Mi}
@@ -51,4 +51,4 @@ metadata:
 spec:
   type: ClusterIP
   selector: {app: streamnotify}
-  ports: [{port: 80, targetPort: 8000}]
+  ports: [{name: https, port: 443, targetPort: 8443}]

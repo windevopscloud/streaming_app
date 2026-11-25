@@ -23,12 +23,13 @@ spec:
               command: ["python", "-c"]
               args:
                 - |
-                  import json, time, urllib.request
+                  import json, ssl, time, urllib.request
                   key = open("/mnt/secrets-store/publish-key").read().strip()
                   body = json.dumps({"topic": "alerts", "message": "Test event " + time.strftime("%H:%M:%S", time.gmtime())}).encode()
-                  req = urllib.request.Request("http://streamnotify/api/publish", body,
+                  req = urllib.request.Request("https://streamnotify/api/publish", body,
                         {"X-Publish-Key": key, "Content-Type": "application/json"})
-                  print(urllib.request.urlopen(req, timeout=10).read())
+                  ctx = ssl._create_unverified_context()   # in-cluster call, pod cert is self-signed
+                  print(urllib.request.urlopen(req, timeout=10, context=ctx).read())
               volumeMounts:
                 - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
           volumes:
