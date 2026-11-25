@@ -63,11 +63,11 @@ def last_code(to):
     return re.search(r"\b(\d{6})\b", msgs[-1]["body"]).group(1)
 
 
-def signup(email, phone):
-    assert call("POST", "/api/register", {"email": email, "phone": phone})[0] == 200
-    assert call("POST", "/api/verify", {"email": email, "channel": "email", "code": last_code(email)})[0] == 200
-    r = call("POST", "/api/verify", {"email": email, "channel": "sms", "code": last_code(phone)})[1]
-    assert r["email_verified"] and r["phone_verified"]
+def signup(email, phone=None):
+    """Email-only sign-up (default). The phone argument is accepted and ignored while SMS is disabled."""
+    assert call("POST", "/api/register", {"email": email})[0] == 200
+    r = call("POST", "/api/verify", {"email": email, "channel": "email", "code": last_code(email)})
+    assert r[0] == 200 and r[1]["email_verified"]
 
 
 def login_full(email, channel="email"):
@@ -116,14 +116,38 @@ def test_resend_throttle_and_new_code_invalidates_old():
 
 
 def test_no_account_enumeration():
-    r1 = call("POST", "/api/login", {"email": "nobody@example.com", "channel": "sms"})
-    r2 = call("POST", "/api/register", {"email": "a@example.com", "phone": "+919876543210"})
+    r1 = call("POST", "/api/login", {"email": "nobody@example.com", "channel": "email"})
+    r2 = call("POST", "/api/register", {"email": "a@example.com"})
     assert r1[0] == 200 and r2[0] == 200 and r1[1] == r2[1]
 
 
 def test_input_validation():
-    assert call("POST", "/api/register", {"email": "bad", "phone": "+919876543210"})[0] == 400
-    assert call("POST", "/api/register", {"email": "e@example.com", "phone": "9876543210"})[0] == 400
+    assert call("POST", "/api/register", {"email": "bad"})[0] == 400
+    assert call("POST", "/api/register", {"email": "e@example.com", "phone": "x"})[0] == 200  # phone ignored
+
+
+def test_email_only_default_rejects_sms_channel():
+    assert call("GET", "/api/config")[1] == {"sms": False}
+    signup("nosms@example.com")
+    assert call("POST", "/api/login", {"email": "nosms@example.com", "channel": "sms"})[0] == 400
+    assert call("POST", "/api/verify", {"email": "nosms@example.com", "channel": "sms", "code": "123456"})[0] == 400
+
+
+def test_unverified_email_cannot_log_in_with_registration_code():
+    call("POST", "/api/register", {"email": "unv@example.com"})
+    code = last_code("unv@example.com")
+    assert call("POST", "/api/login/verify", {"email": "unv@example.com", "channel": "email", "code": code})[0] == 400
+
+
+def test_sms_mode_still_works_when_enabled(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "SMS_ENABLED", True)
+    email, phone = "both@example.com", "+919876543299"
+    assert call("POST", "/api/register", {"email": email})[0] == 400          # phone now required
+    assert call("POST", "/api/register", {"email": email, "phone": phone})[0] == 200
+    assert call("POST", "/api/verify", {"email": email, "channel": "email", "code": last_code(email)})[0] == 200
+    r = call("POST", "/api/verify", {"email": email, "channel": "sms", "code": last_code(phone)})[1]
+    assert r["email_verified"] and r["phone_verified"]
 
 
 # ---------------------------------------------------------------- 2FA

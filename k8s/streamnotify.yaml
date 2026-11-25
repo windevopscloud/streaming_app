@@ -12,6 +12,7 @@ metadata:
   name: streamnotify-config
 data:
   MESSAGING: "aws"
+  SMS_ENABLED: "0"
   AWS_REGION: "us-west-2"
   SES_FROM: "windevopscloud+sender@gmail.com"   # must be a verified SES identity
   BASE_URL: "https://__HOST__"

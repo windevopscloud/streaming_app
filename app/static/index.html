@@ -20,17 +20,18 @@
 <h1>StreamNotify</h1>
 <p class="mut" id="status">Not signed in</p>
 
-<section><h2>1. Sign up (email + mobile)</h2>
+<section><h2>1. Sign up</h2>
   <input id="r_email" placeholder="email" type="email">
-  <input id="r_phone" placeholder="+919876543210">
-  <button onclick="reg()">Send codes</button><br>
+  <input id="r_phone" placeholder="+919876543210" class="smsonly" hidden>
+  <button onclick="reg()">Send code</button><br>
   <input id="r_ecode" placeholder="email code" inputmode="numeric"><button onclick="ver('email')">Verify email</button><br>
-  <input id="r_scode" placeholder="SMS code" inputmode="numeric"><button onclick="ver('sms')">Verify mobile</button>
+  <span class="smsonly" hidden><input id="r_scode" placeholder="SMS code" inputmode="numeric"><button onclick="ver('sms')">Verify mobile</button></span>
+  <p class="mut">After your first login, set up an authenticator app on the <a href="/2fa">2FA page</a>.</p>
 </section>
 
 <section><h2>2. Log in</h2>
   <input id="l_email" placeholder="email" type="email">
-  <select id="l_ch"><option value="email">code by email</option><option value="sms">code by SMS</option></select>
+  <select id="l_ch"><option value="email">code by email</option><option value="sms" class="smsonly" hidden>code by SMS</option></select>
   <button onclick="login()">Send code</button><br>
   <input id="l_code" placeholder="code" inputmode="numeric"><button onclick="loginVerify()">Log in</button>
   <div id="tfa" hidden><input id="t_code" placeholder="authenticator code" inputmode="numeric">
@@ -83,8 +84,9 @@ async function api(path, body, tok, method) {
   const j = await r.json().catch(() => ({})); j._status = r.status; return j;
 }
 const say = (m) => $('status').textContent = m;
+fetch('/api/config').then(r => r.json()).then(c => { if (c.sms) document.querySelectorAll('.smsonly').forEach(e => e.hidden = false); }).catch(() => {});
 async function reg() { const j = await api('/api/register', {email: $('r_email').value, phone: $('r_phone').value}); say(j.error || j.message); }
-async function ver(ch) { const j = await api('/api/verify', {email: $('r_email').value, channel: ch, code: $(ch == 'email' ? 'r_ecode' : 'r_scode').value}); say(j.error || ('email verified: ' + j.email_verified + ', mobile verified: ' + j.phone_verified)); }
+async function ver(ch) { const j = await api('/api/verify', {email: $('r_email').value, channel: ch, code: $(ch == 'email' ? 'r_ecode' : 'r_scode').value}); say(j.error || ('email verified: ' + j.email_verified + (j.sms ? ', mobile verified: ' + j.phone_verified : ''))); }
 async function login() { const j = await api('/api/login', {email: $('l_email').value, channel: $('l_ch').value}); say(j.error || j.message); }
 async function loginVerify() {
   const j = await api('/api/login/verify', {email: $('l_email').value, channel: $('l_ch').value, code: $('l_code').value});

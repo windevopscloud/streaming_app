@@ -32,6 +32,10 @@ def norm_email(v):
     return v
 
 
+def channels():
+    return ("email", "sms") if config.SMS_ENABLED else ("email",)
+
+
 def norm_phone(v):
     v = re.sub(r"[\s\-()]", "", str(v or ""))
     if not PHONE_RE.match(v):
@@ -77,27 +81,34 @@ def _send_user_code(user, channel):
 
 
 def register(data, req):
-    email, phone = norm_email(data.get("email")), norm_phone(data.get("phone"))
+    email = norm_email(data.get("email"))
+    phone = norm_phone(data.get("phone")) if config.SMS_ENABLED else ""  # phone column stays NOT NULL: "" = none
     user = get_user(email)
-    if user and user["email_verified"] and user["phone_verified"]:
+    if user and _fully_verified(user):
         return GENERIC  # never reveal that the account exists
     if user:
-        db.x("UPDATE users SET phone=?, phone_verified=0 WHERE id=?", (phone, user["id"]))
-        user = get_user(email)
+        if config.SMS_ENABLED:
+            db.x("UPDATE users SET phone=?, phone_verified=0 WHERE id=?", (phone, user["id"]))
+            user = get_user(email)
     else:
         uid = uuid.uuid4().hex
         db.x("INSERT INTO users (id, email, phone, created) VALUES (?,?,?,?)",
              (uid, email, phone, sec.now()))
         user = get_user(email)
     _send_user_code(user, "email")
-    _send_user_code(user, "sms")
+    if config.SMS_ENABLED:
+        _send_user_code(user, "sms")
     return GENERIC
+
+
+def _fully_verified(user):
+    return bool(user["email_verified"]) and (bool(user["phone_verified"]) or not config.SMS_ENABLED)
 
 
 def verify(data, req):
     email, channel = norm_email(data.get("email")), data.get("channel")
-    if channel not in ("email", "sms"):
-        raise ApiError(400, "channel must be email or sms")
+    if channel not in channels():
+        raise ApiError(400, "channel must be " + " or ".join(channels()))
     user = get_user(email)
     if not user or not sec.check_code(user, channel, data.get("code")):
         raise ApiError(400, "invalid or expired code")
@@ -105,16 +116,16 @@ def verify(data, req):
     db.x(f"UPDATE users SET {col}=1 WHERE id=?", (user["id"],))
     user = get_user(email)
     return {"ok": True, "email_verified": bool(user["email_verified"]),
-            "phone_verified": bool(user["phone_verified"])}
+            "phone_verified": bool(user["phone_verified"]), "sms": config.SMS_ENABLED}
 
 
 # ---------------------------------------------------------------- login (factor 1: OTP, factor 2: TOTP)
 def login(data, req):
     email, channel = norm_email(data.get("email")), data.get("channel")
-    if channel not in ("email", "sms"):
-        raise ApiError(400, "channel must be email or sms")
+    if channel not in channels():
+        raise ApiError(400, "channel must be " + " or ".join(channels()))
     user = get_user(email)
-    verified = user and user["email_verified" if channel == "email" else "phone_verified"]
+    verified = user and _fully_verified(user)
     if verified:
         try:
             _send_user_code(user, channel)
@@ -126,7 +137,8 @@ def login(data, req):
 def login_verify(data, req):
     email, channel = norm_email(data.get("email")), data.get("channel")
     user = get_user(email)
-    if channel not in ("email", "sms") or not user or not sec.check_code(user, channel, data.get("code")):
+    if channel not in channels() or not user or not _fully_verified(user) \
+            or not sec.check_code(user, channel, data.get("code")):
         raise ApiError(400, "invalid or expired code")
     if user["totp_enabled"]:
         return {"stage": "2fa_required", "token": sec.create_session(user["id"], "partial")}
@@ -441,6 +453,10 @@ DECLINE = {"invalid_card": "Payment declined: invalid card details",
            "insufficient_balance": "Payment declined: insufficient balance"}
 
 
+def app_config(data, req):
+    return {"sms": config.SMS_ENABLED}
+
+
 def plans_list(data, req):
     return {"plans": db.q("SELECT topic, title, description, price_cents FROM plans ORDER BY price_cents, topic"),
             "days": config.SUB_DAYS, "payment_mode": config.PAYMENT_MODE}
@@ -556,6 +572,7 @@ app = Starlette(lifespan=lifespan, routes=[
     Route("/api/me", api(me), methods=["GET"]),
     Route("/api/logout", api(logout), methods=["POST"]),
     Route("/api/subscribe", api(subscribe), methods=["POST"]),
+    Route("/api/config", api(app_config), methods=["GET"]),
     Route("/api/plans", api(plans_list), methods=["GET"]),
     Route("/api/test-cards", api(test_cards), methods=["GET"]),
     Route("/api/checkout", api(checkout), methods=["POST"]),

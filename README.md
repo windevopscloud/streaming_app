@@ -1,7 +1,7 @@
 # StreamNotify
 
-Email OTP + mobile (SMS) OTP + authenticator-app 2FA + double opt-in email subscriptions + live feed (SSE).
-Starlette service, SQLite locally / PostgreSQL (RDS) in the cluster, SES for email, SNS for SMS.
+Email OTP + authenticator-app 2FA (mobile SMS OTP is optional, off by default: `SMS_ENABLED=1`) + double opt-in email subscriptions + live feed (SSE).
+Starlette service, SQLite locally / PostgreSQL (RDS) in the cluster, SES for email, SNS for SMS (only when `SMS_ENABLED=1`).
 
 ## Run locally (no AWS needed)
     pip install -r requirements.txt
