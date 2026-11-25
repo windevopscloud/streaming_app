@@ -1,7 +1,7 @@
 # StreamNotify
 
 Email OTP + authenticator-app 2FA (mobile SMS OTP is optional, off by default: `SMS_ENABLED=1`) + double opt-in email subscriptions + live feed (SSE).
-Starlette service, SQLite locally / PostgreSQL (RDS) in the cluster, email over SMTP (same Gmail secret as signup_app) or SES; SNS for SMS only when `SMS_ENABLED=1`.
+Starlette service, SQLite locally / PostgreSQL (RDS, own database + user) in the cluster, email over SMTP (same Gmail secret as signup_app) or SES; SNS for SMS only when `SMS_ENABLED=1`.
 
 ## Run locally (no AWS needed)
     pip install -r requirements.txt
@@ -43,14 +43,23 @@ Browser -> ALB: HTTPS with the ACM certificate for `streaming.windevopscloud.com
 ALB -> pod: HTTPS too (`backend-protocol: HTTPS`). The pod serves TLS itself on 8443 (`python -m app.serve`) with a self-signed certificate made at start (the ALB does not validate it). Probes, Service (443) and the test publisher use HTTPS.
 signup_app is different: it ends TLS at the ALB and talks plain HTTP to its pods. Local development stays plain HTTP (`uvicorn app.main:app --port 8000`).
 
+## Database (RDS PostgreSQL, same way as signup_app)
+Own database `streamnotify` and own limited user `streaming_app` on the existing RDS instance. The app user can read/write rows only; it cannot create tables.
+1. Put the login in Secrets Manager (value set by hand, never in Terraform): secret `streamnotify/poc/rds-app` = `{"username":"streaming_app","password":"<new password>"}`.
+2. As the RDS admin (from the tools EC2, which can reach RDS):
+   - `psql "host=<endpoint> dbname=postgres user=<admin> sslmode=require" -v app_pw="<same password>" -f db/01_create_db_user.sql`
+   - `psql "host=<endpoint> dbname=streamnotify user=<admin> sslmode=require" -f db/02_schema.sql`
+3. The pod reads `DB_USER_FILE` / `DB_PASSWORD_FILE` (mounted from the secret) and `DB_HOST` / `DB_NAME` / `DB_SSLMODE` from the config map. `DB_HOST` is the RDS endpoint from SSM `/rds/signup-poc/endpoint`, added at deploy time. With `DB_HOST` set the app does not run DDL (`DB_INIT=0`).
+4. Without `DB_HOST` (local, tests) the app uses SQLite and creates its own tables. `db/02_schema.sql` is checked against `app/db.py` by a test.
+After a rebuild of the account the database is new: repeat steps 1-2.
+
 ## Deploy (EKS, same pattern as signup_app)
 Layout: `k8s/base` + `k8s/overlays/poc` (kustomize, no placeholders), `deploy/apply.sh`, `.github/workflows/build-push.yml`.
 1. **Runner**: this repo has its own runner `streaming_app-runner-poc` (init_aws workflow: `create_app_runner=yes`, `APP_GITHUB_REPO=streaming_app`).
-2. **Secrets Manager** (infra_aws): the pod reads `ses/poc/smtp` (Gmail user + app password, already used by signup_app) and `streamnotify/poc/app` (`SECRET_KEY`, `PUBLISH_KEY`). The IAM role `streamnotify-role` must be allowed to read both, or the pod stays in ContainerCreating.
+2. **Secrets Manager** (infra_aws): the pod reads `ses/poc/smtp` (Gmail login, already used by signup_app), `streamnotify/poc/rds-app` (DB login) and `streamnotify/poc/app` (`SECRET_KEY`, `PUBLISH_KEY`). The IAM role `streamnotify-role` must be allowed to read all three, or the pod stays in ContainerCreating.
 3. **Host + TLS**: ACM certificate for `streaming.windevopscloud.com` in us-west-2 plus a CNAME to the ALB. The Ingress has no certificate ARN: the AWS Load Balancer Controller finds the certificate that matches the host.
-4. **Build + deploy**: run the `build-push` workflow (`deploy=yes`). `deploy/apply.sh` writes a small kustomize overlay for that run (image = your account's ECR + the commit tag, IRSA role ARN) and applies it. Replicas stay at 1 (in-memory SSE broker).
-5. Data is SQLite on an emptyDir (lost when the pod is replaced); set `DATABASE_URL` to an RDS PostgreSQL URL for anything lasting.
-6. Test publisher: suspended CronJob. Run once: `kubectl create job --from=cronjob/streamnotify-publisher test-1`.
+4. **Build + deploy**: run the `build-push` workflow (`deploy=yes`). `deploy/apply.sh <tag> <region> <rds-endpoint>` writes a small kustomize overlay for that run (image = your account's ECR + the commit tag, IRSA role ARN, DB_HOST) and applies it. Replicas stay at 1 (in-memory SSE broker).
+5. Test publisher: suspended CronJob. Run once: `kubectl create job --from=cronjob/streamnotify-publisher test-1`.
 
 ## AWS gotchas
 - **Email**: `MESSAGING=smtp` is the same logic as signup_app (`SMTP_HOST`, `SMTP_PORT`, `MAIL_FROM`, `SMTP_USER_FILE`, `SMTP_PASSWORD_FILE`, STARTTLS on 587, which the node security group allows). `MESSAGING=aws` (SES API, port 443) cannot be reached from nodes without internet.

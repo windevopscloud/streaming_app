@@ -15,6 +15,15 @@ def _secret(name, default=""):
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./streamnotify.db")
+
+# RDS PostgreSQL, same logic as signup_app: host/name from env, login from mounted secret files
+# (DB_USER_FILE / DB_PASSWORD_FILE, read again on every connection so a rotated login is picked up).
+DB_HOST = os.environ.get("DB_HOST", "")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "streamnotify")
+DB_SSLMODE = os.environ.get("DB_SSLMODE", "require")
+# Tables are created by the admin (db/schema.sql), not by the limited app user. SQLite/local still creates them itself.
+DB_INIT = os.environ.get("DB_INIT", "0" if DB_HOST else "1") == "1"
 SECRET_KEY = _secret("SECRET_KEY", "dev-only-change-me")
 MESSAGING = os.environ.get("MESSAGING", "console")  # console | smtp | aws
 SMS_ENABLED = os.environ.get("SMS_ENABLED", "0") == "1"  # 0: email OTP only (default); 1: also require/verify a mobile number

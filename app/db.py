@@ -1,4 +1,4 @@
-"""Tiny DB layer: SQLite for local/test, PostgreSQL (RDS) when DATABASE_URL is postgres://."""
+"""Tiny DB layer: SQLite for local/test; PostgreSQL (RDS) when DB_HOST is set (signup_app style) or DATABASE_URL is postgres://."""
 import contextlib
 import sqlite3
 
@@ -80,17 +80,27 @@ SCHEMA = [
 
 
 class DB:
-    def __init__(self, url):
+    def __init__(self, url, use_params=False):
         self.url = url
-        self.pg = url.startswith(("postgres://", "postgresql://"))
+        self.use_params = use_params
+        self.pg = use_params or url.startswith(("postgres://", "postgresql://"))
         self.path = None if self.pg else (url.split("///", 1)[1] if "///" in url else url)
+
+    def _pg_connect(self):
+        import psycopg2
+        import psycopg2.extras
+        if self.use_params:   # login read from the mounted secret files on every connection
+            return psycopg2.connect(
+                host=config.DB_HOST, port=config.DB_PORT, dbname=config.DB_NAME,
+                user=config._secret("DB_USER"), password=config._secret("DB_PASSWORD"),
+                sslmode=config.DB_SSLMODE, connect_timeout=5,
+                cursor_factory=psycopg2.extras.RealDictCursor)
+        return psycopg2.connect(self.url, cursor_factory=psycopg2.extras.RealDictCursor)
 
     @contextlib.contextmanager
     def _conn(self):
         if self.pg:
-            import psycopg2
-            import psycopg2.extras
-            c = psycopg2.connect(self.url, cursor_factory=psycopg2.extras.RealDictCursor)
+            c = self._pg_connect()
         else:
             c = sqlite3.connect(self.path, timeout=10)
             c.row_factory = sqlite3.Row
@@ -123,6 +133,8 @@ class DB:
         return self._run(sql, args)[1]
 
     def init(self):
+        if not config.DB_INIT:
+            return
         for stmt in SCHEMA:
             self.x(stmt)
         # migration for databases created before paid plans existed
@@ -132,4 +144,4 @@ class DB:
             pass
 
 
-db = DB(config.DATABASE_URL)
+db = DB(config.DATABASE_URL, use_params=bool(config.DB_HOST))

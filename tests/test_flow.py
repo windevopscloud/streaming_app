@@ -486,3 +486,23 @@ def test_pod_tls_cert_is_valid_and_served(tmp_path):
     from app.tls import make_self_signed
     cert, key = make_self_signed(str(tmp_path))
     ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)   # loads = matching, valid pair
+
+
+def test_rds_mode_reads_login_from_files_and_skips_ddl(tmp_path, monkeypatch):
+    from app import config
+    from app.db import DB
+    (tmp_path / "u").write_text("streaming_app\n"); (tmp_path / "p").write_text("s3cret\n")
+    monkeypatch.setenv("DB_USER_FILE", str(tmp_path / "u")); monkeypatch.setenv("DB_PASSWORD_FILE", str(tmp_path / "p"))
+    monkeypatch.setattr(config, "DB_HOST", "rds.example")
+    d = DB("sqlite:///x", use_params=True)
+    assert d.pg and config._secret("DB_USER") == "streaming_app" and config._secret("DB_PASSWORD") == "s3cret"
+    monkeypatch.setattr(config, "DB_INIT", False)
+    d.init()   # must not touch the database (the app user cannot create tables)
+
+
+def test_admin_schema_sql_matches_app_schema():
+    from app.db import SCHEMA
+    sql = open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "02_schema.sql")).read()
+    for stmt in SCHEMA:
+        assert stmt.strip() in sql, "db/02_schema.sql is out of date: " + stmt.strip()[:60]
+    assert "01_create_db_user" in sql and "streaming_app" in sql and "TO streamnotify" not in sql
