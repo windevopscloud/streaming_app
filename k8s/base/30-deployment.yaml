@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: streamnotify
+  namespace: default
+spec:
+  replicas: 1            # in-memory SSE broker: keep at 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: streamnotify}
+  template:
+    metadata:
+      labels: {app: streamnotify}
+    spec:
+      serviceAccountName: streamnotify
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: app
+          image: streamnotify
+          ports: [{containerPort: 8000}]
+          envFrom: [{configMapRef: {name: streamnotify-config}}]
+          env:
+            - {name: SECRET_KEY_FILE,    value: /mnt/secrets-store/secret-key}
+            - {name: PUBLISH_KEY_FILE,   value: /mnt/secrets-store/publish-key}
+            - {name: SMTP_USER_FILE,     value: /mnt/secrets-store/smtp-user}
+            - {name: SMTP_PASSWORD_FILE, value: /mnt/secrets-store/smtp-password}
+          volumeMounts:
+            - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
+            - {name: data, mountPath: /data}
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+      volumes:
+        - name: data          # SQLite lives here: lost when the pod is replaced (fine for the test app)
+          emptyDir: {}
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: streamnotify-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: streamnotify
+  namespace: default
+spec:
+  type: ClusterIP
+  selector: {app: streamnotify}
+  ports: [{port: 80, targetPort: 8000}]

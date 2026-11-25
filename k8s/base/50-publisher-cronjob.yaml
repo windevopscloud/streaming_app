@@ -1,0 +1,40 @@
+# Test publisher: posts to topic "alerts" every minute. Suspended by default.
+#   start:  kubectl patch cronjob streamnotify-publisher -p '{"spec":{"suspend":false}}'
+#   once:   kubectl create job --from=cronjob/streamnotify-publisher test-1
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: streamnotify-publisher
+  namespace: default
+spec:
+  suspend: true
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: streamnotify
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001}
+          containers:
+            - name: pub
+              image: streamnotify
+              command: ["python", "-c"]
+              args:
+                - |
+                  import json, time, urllib.request
+                  key = open("/mnt/secrets-store/publish-key").read().strip()
+                  body = json.dumps({"topic": "alerts", "message": "Test event " + time.strftime("%H:%M:%S", time.gmtime())}).encode()
+                  req = urllib.request.Request("http://streamnotify/api/publish", body,
+                        {"X-Publish-Key": key, "Content-Type": "application/json"})
+                  print(urllib.request.urlopen(req, timeout=10).read())
+              volumeMounts:
+                - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
+          volumes:
+            - name: secrets
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: streamnotify-secrets

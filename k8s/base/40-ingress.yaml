@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: streamnotify
+  namespace: default
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # no certificate-arn: the ALB controller finds the ACM certificate that matches the host below
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    # live feed (SSE): the app sends a ping every 15s, so a longer idle timeout keeps streams open
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
+    alb.ingress.kubernetes.io/tags: Environment=poc
+spec:
+  ingressClassName: alb
+  rules:
+    - host: stream.windevopscloud.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: streamnotify
+                port:
+                  number: 80

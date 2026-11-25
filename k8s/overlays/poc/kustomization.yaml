@@ -1,0 +1,20 @@
+# Everything fixed lives here. Only the image (registry + tag) and the IRSA role ARN depend on the
+# account, so deploy/apply.sh adds those through a generated kustomize overlay (k8s/overlays/run).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: streamnotify-config
+    literals:
+      - MESSAGING=smtp
+      - SMS_ENABLED=0
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - MAIL_FROM=windevopscloud+sender@gmail.com
+      - BASE_URL=https://stream.windevopscloud.com
+      - DATABASE_URL=sqlite:////data/streamnotify.db

@@ -1,4 +1,9 @@
-"""Email (SES) and SMS (SNS) senders. MESSAGING=console records to the outbox table instead."""
+"""Email and SMS senders.
+MESSAGING=console records to the outbox table, smtp sends email over SMTP, aws uses SES v2 (email) and SNS (SMS).
+"""
+import smtplib
+import ssl
+from email.message import EmailMessage
 import time
 import uuid
 
@@ -18,8 +23,19 @@ def _record(channel, to, subject, body):
 
 
 def send_email(to, subject, body):
-    if config.MESSAGING != "aws":
+    if config.MESSAGING == "console":
         return _record("email", to, subject, body)
+    if config.MESSAGING == "smtp":
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = config.MAIL_FROM, to, subject
+        msg.set_content(body)
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=15) as smtp:
+            if config.SMTP_STARTTLS:
+                smtp.starttls(context=ssl.create_default_context())
+            if config.SMTP_USER:
+                smtp.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            smtp.send_message(msg)
+        return
     global _ses
     if _ses is None:
         import boto3
@@ -32,8 +48,10 @@ def send_email(to, subject, body):
 
 
 def send_sms(to, body):
-    if config.MESSAGING != "aws":
+    if config.MESSAGING == "console":
         return _record("sms", to, None, body)
+    if config.MESSAGING != "aws":
+        raise RuntimeError("SMS needs MESSAGING=aws")
     global _sns
     if _sns is None:
         import boto3

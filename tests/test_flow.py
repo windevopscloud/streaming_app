@@ -448,3 +448,34 @@ def test_2fa_setup_qr_recovery_regenerate_and_disable():
     me = call("GET", "/api/me", token=tok)[1]
     assert me["totp_enabled"] is False and me["recovery_remaining"] == 0
     assert login_full("tfa1@example.com")["stage"] == "ok"              # no second factor any more
+
+
+# ---------------------------------------------------------------- SMTP mode (same path as signup_app)
+def test_smtp_mode_sends_email_with_login(monkeypatch):
+    from app import config, messaging
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None): sent["hp"] = (host, port)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self, context=None): sent["tls"] = True
+        def login(self, u, p): sent["login"] = (u, p)
+        def send_message(self, m): sent["msg"] = m
+
+    monkeypatch.setattr(messaging.smtplib, "SMTP", FakeSMTP)
+    for k, v in {"MESSAGING": "smtp", "SMTP_HOST": "smtp.example.com", "SMTP_PORT": 587,
+                 "MAIL_FROM": "from@example.com", "SMTP_USER": "u", "SMTP_PASSWORD": "p"}.items():
+        monkeypatch.setattr(config, k, v)
+    messaging.send_email("to@example.com", "Hi", "Your code is 123456")
+    assert sent["hp"] == ("smtp.example.com", 587) and sent["tls"] and sent["login"] == ("u", "p")
+    assert sent["msg"]["To"] == "to@example.com" and sent["msg"]["From"] == "from@example.com"
+    with pytest.raises(RuntimeError):
+        messaging.send_sms("+919876543210", "x")
+
+
+def test_secret_files_override_env(tmp_path, monkeypatch):
+    from app import config
+    f = tmp_path / "k"; f.write_text("from-file\n")
+    monkeypatch.setenv("X_TEST_FILE", str(f)); monkeypatch.setenv("X_TEST", "from-env")
+    assert config._secret("X_TEST") == "from-file"
