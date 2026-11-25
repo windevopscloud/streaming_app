@@ -4,6 +4,6 @@
 --   psql "host=<endpoint> dbname=postgres user=<admin> sslmode=require" -v app_pw="$PW" -f db/01_create_db_user.sql
 -- (The secret streamnotify/poc/rds-app must hold {"username":"streaming_app","password":"<new password>"} first.)
 CREATE DATABASE streamnotify;
-CREATE USER streaming_app WITH PASSWORD :'app_pw';
-REVOKE ALL ON DATABASE streamnotify FROM PUBLIC;
+CREATE USER streamnotify WITH PASSWORD :'streamnotify@123';
 GRANT CONNECT ON DATABASE streamnotify TO streaming_app;
+REVOKE ALL ON DATABASE streamnotify FROM PUBLIC;
