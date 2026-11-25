@@ -180,9 +180,9 @@
       <div class="co" id="co" hidden>
         <h3 id="co_title"></h3>
         <div class="cols">
-          <div><label for="c_num">Card number</label><input id="c_num" inputmode="numeric" autocomplete="off" placeholder="1111 1111 1111 1111"></div>
-          <div><label for="c_exp">Expiry</label><input id="c_exp" autocomplete="off" placeholder="MM/YY"></div>
-          <div><label for="c_cvv">CVV</label><input id="c_cvv" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="123"></div>
+          <div><label for="c_num">Card number</label><input id="c_num" inputmode="numeric" autocomplete="off" maxlength="19" placeholder="1111 1111 1111 1111"></div>
+          <div><label for="c_exp">Expiry</label><input id="c_exp" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="MM/YY"></div>
+          <div><label for="c_cvv">CVV</label><input id="c_cvv" inputmode="numeric" autocomplete="off" maxlength="3" placeholder="123"></div>
         </div>
         <div style="margin-top:1rem"><button class="p" id="paybtn" onclick="pay()">Confirm payment</button> <button onclick="el('co').hidden=true">Cancel</button></div>
         <div class="msg" id="co_msg" hidden></div>
@@ -279,6 +279,13 @@ async function logout() {
   el('app').hidden = true; el('auth').hidden = false; toLogin(); el('l_step2').hidden = true; show('l_msg', '');
   history.replaceState(null, '', location.pathname);
 }
+
+/* ---------- card field formatting ---------- */
+const digits = (v, n) => v.replace(/\D/g, '').slice(0, n);
+el('c_num').addEventListener('input', e => { e.target.value = digits(e.target.value, 16).replace(/(.{4})(?=.)/g, '$1 '); });
+el('c_exp').addEventListener('input', e => { const d = digits(e.target.value, 4); e.target.value = d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : (e.inputType == 'deleteContentBackward' ? d : d.length == 2 ? d + '/' : d); });
+el('c_cvv').addEventListener('input', e => { e.target.value = digits(e.target.value, 3); });
+['l_code', 'r_code', 't_code', 's_code'].forEach(i => el(i).addEventListener('input', e => { e.target.value = digits(e.target.value, 6); }));
 
 /* ---------- app ---------- */
 const PAGES = ['feed', 'subs', 'available', 'cards', 'history'];
