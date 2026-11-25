@@ -22,6 +22,7 @@ env:
   ECR_REPO: streamnotify
   APP_NAME: streamnotify
   ENVIRONMENT: poc
+  DB_PARAM: /rds/signup-poc/endpoint   # same RDS instance as signup_app (own database + own user)
 
 jobs:
   build:
@@ -67,6 +68,7 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           TAG="${GITHUB_SHA::7}"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "DB_HOST=$(aws ssm get-parameter --name "$DB_PARAM" --query Parameter.Value --output text)" >> "$GITHUB_ENV"
           echo "BUCKET=bundles-${ACCOUNT_ID}-${ENVIRONMENT}" >> "$GITHUB_ENV"
           echo "KEY=releases/${APP_NAME}/${TAG}-${GITHUB_RUN_NUMBER}.tgz" >> "$GITHUB_ENV"
 
@@ -83,7 +85,7 @@ jobs:
             "rm -rf /tmp/bundle && mkdir -p /tmp/bundle",
             "aws s3 cp s3://${BUCKET}/${KEY} /tmp/bundle/b.tgz --region ${AWS_REGION}",
             "tar xzf /tmp/bundle/b.tgz -C /tmp/bundle",
-            "cd /tmp/bundle && bash deploy/apply.sh ${TAG} ${AWS_REGION}"
+            "cd /tmp/bundle && bash deploy/apply.sh ${TAG} ${AWS_REGION} ${DB_HOST}"
           ]}
           EOF
           CMD_ID=$(aws ssm send-command \
