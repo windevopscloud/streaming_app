@@ -1,6 +1,7 @@
 """Tiny DB layer: SQLite for local/test; PostgreSQL (RDS) when DB_HOST is set (signup_app style) or DATABASE_URL is postgres://."""
 import contextlib
 import sqlite3
+import time
 
 from . import config
 
@@ -105,10 +106,22 @@ class DB:
                 cursor_factory=psycopg2.extras.RealDictCursor)
         return psycopg2.connect(self.url, cursor_factory=psycopg2.extras.RealDictCursor)
 
+    def _pg_connect_retry(self, retries=10, delay=5):
+        """Right after a password rotation the mounted file can lag by up to the CSI poll interval,
+        so a password failure is retried a few times (the files are re-read on every attempt)."""
+        import psycopg2
+        for attempt in range(1, retries + 1):
+            try:
+                return self._pg_connect()
+            except psycopg2.OperationalError as exc:
+                if "password authentication failed" not in str(exc) or attempt == retries:
+                    raise
+                time.sleep(delay)
+
     @contextlib.contextmanager
     def _conn(self):
         if self.pg:
-            c = self._pg_connect()
+            c = self._pg_connect_retry()
         else:
             c = sqlite3.connect(self.path, timeout=10)
             c.row_factory = sqlite3.Row

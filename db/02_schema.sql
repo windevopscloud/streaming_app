@@ -1,5 +1,5 @@
--- Run once as the RDS admin AFTER 01_create_db_user.sql, connected to the new database:
---   psql "host=<endpoint> dbname=streamnotify user=<admin> sslmode=require" -f db/02_schema.sql
+-- Run by deploy/db-bootstrap.sh as the RDS admin, connected to the streamnotify database, right after
+-- 01_create_db_user.sql (which creates the database and the streaming_app user). Safe to run again.
 -- The app user (streaming_app) can only read and write rows: it cannot create or drop tables.
 -- Tables created by the admin get the app user's privileges through ALTER DEFAULT PRIVILEGES.
 GRANT USAGE ON SCHEMA public TO streaming_app;

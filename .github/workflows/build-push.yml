@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload bundle
         run: |
-          tar czf bundle.tgz k8s deploy
+          tar czf bundle.tgz k8s deploy db
           aws s3 cp bundle.tgz "s3://${BUCKET}/${KEY}"
 
       - name: Run deploy on tools EC2

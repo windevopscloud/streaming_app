@@ -36,6 +36,9 @@ patches:
         value: {eks.amazonaws.com/role-arn: "arn:aws:iam::${ACCOUNT_ID}:role/streamnotify-role"}
 KUST
 
+# Create or sync the database, the app DB user (password from Secrets Manager) and the tables
+bash deploy/db-bootstrap.sh
+
 # The Ingress and Service are checked by the AWS Load Balancer Controller's webhooks,
 # so the controller must be running before we apply.
 echo "Waiting for the AWS Load Balancer Controller..."
